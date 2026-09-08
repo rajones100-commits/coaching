@@ -1,0 +1,276 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<meta name="theme-color" content="#111827">
+<title>Coaching Calendar</title>
+<style>
+*{box-sizing:border-box}
+body{margin:0;background:#f3f4f6;color:#111827;font-family:Arial,Helvetica,sans-serif}
+.wrap{width:min(1000px,calc(100% - 20px));margin:10px auto 40px}
+header{background:#111827;color:white;padding:24px;border-radius:20px}
+header h1{margin:4px 0;font-size:clamp(32px,6vw,50px)}
+header p{margin:8px 0 0;color:#d1d5db}
+.topline{font-size:12px;letter-spacing:.12em;font-weight:bold;color:#9ca3af}
+.cards{display:grid;grid-template-columns:1fr 1fr 2fr;gap:12px;margin:14px 0}
+.card{background:white;border-radius:16px;padding:18px;box-shadow:0 7px 24px rgba(0,0,0,.07)}
+.label{font-size:12px;text-transform:uppercase;letter-spacing:.08em;color:#6b7280;font-weight:bold}
+.big{font-size:34px;font-weight:bold;margin:6px 0}
+.next{font-size:21px;font-weight:bold;margin:7px 0}
+.tabs{display:flex;gap:7px;overflow:auto;background:white;padding:6px;border-radius:13px;box-shadow:0 7px 24px rgba(0,0,0,.06)}
+.tabs button{border:0;background:transparent;padding:11px 14px;border-radius:9px;font-weight:bold;white-space:nowrap;cursor:pointer}
+.tabs button.active{background:#111827;color:white}
+.controls{display:flex;gap:9px;margin:12px 0}
+.controls input{flex:1;padding:12px;border:1px solid #ddd;border-radius:11px;font-size:16px}
+.controls button{padding:12px 16px;border:0;border-radius:11px;background:#111827;color:white;font-weight:bold;cursor:pointer}
+#status{padding:12px 4px;color:#6b7280}
+#status.error{background:#fef2f2;color:#991b1b;padding:14px;border-radius:12px}
+.day{background:white;border-radius:16px;overflow:hidden;margin:13px 0;box-shadow:0 7px 24px rgba(0,0,0,.07)}
+.dayhead{padding:14px 17px;background:#fafafa;border-bottom:1px solid #e5e7eb;display:flex;justify-content:space-between;gap:10px}
+.dayhead h2{margin:0;font-size:19px}
+.dayhead span{color:#6b7280}
+.booking{display:grid;grid-template-columns:85px 1fr auto;gap:14px;padding:16px 17px;border-bottom:1px solid #e5e7eb}
+.booking:last-child{border-bottom:0}
+.time{font-weight:bold;font-size:17px}
+.name{font-size:18px;font-weight:bold}
+.sub{color:#6b7280;font-size:13px;margin-top:4px}
+.tag{background:#dbeafe;color:#1d4ed8;padding:6px 9px;border-radius:999px;font-size:12px;font-weight:bold;height:max-content}
+.empty{background:white;text-align:center;padding:40px 15px;border-radius:16px;color:#6b7280}
+footer{color:#6b7280;font-size:12px;padding:12px 4px}
+@media(max-width:650px){
+ .cards{grid-template-columns:1fr 1fr}
+ .cards .card:last-child{grid-column:1/-1}
+ .booking{grid-template-columns:68px 1fr}
+ .tag{grid-column:2;justify-self:start}
+ .controls{flex-direction:column}
+}
+</style>
+</head>
+<body>
+<div class="wrap">
+<header>
+<div class="topline">PERSONAL DASHBOARD</div>
+<h1>Coaching Calendar</h1>
+<p id="todayLabel"></p>
+</header>
+
+<section class="cards">
+<div class="card"><div class="label">Today</div><div id="todayCount" class="big">0</div><div>bookings</div></div>
+<div class="card"><div class="label">Next 7 days</div><div id="weekCount" class="big">0</div><div>bookings</div></div>
+<div class="card"><div class="label">Next booking</div><div id="nextName" class="next">Loading…</div><div id="nextWhen">—</div></div>
+</section>
+
+<nav class="tabs">
+<button class="active" data-view="today">Today</button>
+<button data-view="week">Next 7 Days</button>
+<button data-view="month">Month</button>
+<button data-view="all">All Upcoming</button>
+</nav>
+
+<div class="controls">
+<input id="search" type="search" placeholder="Search coaching bookings…">
+<button id="refresh">Refresh</button>
+</div>
+
+<div id="status">Loading coaching calendar…</div>
+<main id="list"></main>
+<footer id="updated"></footer>
+</div>
+
+<script>
+const SHEET_ID = '1D-uFbY6d26T9OmQKG1p1aCCh88eHiELgLUv8jtM2WYY';
+const PUBLISHED_ID = '2PACX-1vS9TNj5LT4xQbMo_EQXt13u-YZzNaBQ9jZyhVsGffMmdvqjNG7PQKIvlnw00ptSZhwc9c5CNvoJn-xB';
+const GID = '0';
+
+let events = [];
+let view = 'today';
+let attempt = 0;
+let timeoutHandle = null;
+
+const $ = id => document.getElementById(id);
+
+function esc(v){
+ return String(v??'').replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#039;'}[c]));
+}
+function sod(d){return new Date(d.getFullYear(),d.getMonth(),d.getDate())}
+function same(a,b){return a.getFullYear()===b.getFullYear()&&a.getMonth()===b.getMonth()&&a.getDate()===b.getDate()}
+function parseDate(s,t){
+ const m=String(s).trim().match(/^(\d{1,2})[\/\-.](\d{1,2})[\/\-.](\d{2,4})$/);
+ if(!m)return null;
+ let y=+m[3]; if(y<100)y+=2000;
+ let h=0,mi=0; const tm=String(t).match(/^(\d{1,2}):(\d{2})$/);
+ if(tm){h=+tm[1];mi=+tm[2]}
+ return new Date(y,+m[2]-1,+m[1],h,mi);
+}
+function cv(c){
+ if(!c)return '';
+ if(c.f!==undefined&&c.f!==null)return String(c.f).trim();
+ if(c.v!==undefined&&c.v!==null){
+   if(c.v instanceof Date) return c.v.toLocaleDateString('en-GB');
+   return String(c.v).trim();
+ }
+ return '';
+}
+function ftime(e){return e.date.toLocaleTimeString('en-GB',{hour:'2-digit',minute:'2-digit'})}
+
+function tableToEvents(table){
+ if(!table||!table.cols||!table.rows)return [];
+ let slots=[];
+ table.cols.forEach((c,i)=>{
+   const x=String(c.label||'').trim();
+   if(i>0&&/^\d{1,2}:\d{2}$/.test(x))slots.push({i,time:x});
+ });
+ let rows=table.rows;
+ if(!slots.length&&rows.length){
+   (rows[0].c||[]).forEach((c,i)=>{
+     const x=cv(c);
+     if(i>0&&/^\d{1,2}:\d{2}$/.test(x))slots.push({i,time:x});
+   });
+   if(slots.length)rows=rows.slice(1);
+ }
+ let out=[];
+ rows.forEach((r,ri)=>{
+   const cells=r.c||[];
+   const ds=cv(cells[0]);
+   if(!ds)return;
+   slots.forEach(s=>{
+     const name=cv(cells[s.i]);
+     if(!name)return;
+     const date=parseDate(ds,s.time);
+     if(date)out.push({date,name,time:s.time,id:ri+'-'+s.i});
+   });
+ });
+ return out.sort((a,b)=>a.date-b.date);
+}
+
+function onSheetSuccess(resp){
+ clearTimeout(timeoutHandle);
+ try{
+   if(!resp||resp.status==='error') throw new Error('Google returned an error.');
+   const parsed = tableToEvents(resp.table);
+   if(!parsed.length) throw new Error('No bookings recognised.');
+   events = parsed;
+   summary();
+   render();
+   $('updated').textContent='Last refreshed '+new Date().toLocaleTimeString('en-GB',{hour:'2-digit',minute:'2-digit'});
+   $('status').textContent='';
+   $('status').className='';
+ }catch(e){
+   tryNextEndpoint();
+ }
+}
+window.coachingSheetCallback = onSheetSuccess;
+
+function addJsonp(url){
+ const old=$('sheetScript');
+ if(old) old.remove();
+ const s=document.createElement('script');
+ s.id='sheetScript';
+ s.src=url;
+ s.async=true;
+ s.onerror=tryNextEndpoint;
+ document.head.appendChild(s);
+ timeoutHandle=setTimeout(tryNextEndpoint,5000);
+}
+
+function tryNextEndpoint(){
+ clearTimeout(timeoutHandle);
+ attempt++;
+
+ if(attempt===1){
+   $('status').textContent='Loading calendar…';
+   addJsonp(
+     'https://docs.google.com/spreadsheets/d/'+SHEET_ID+
+     '/gviz/tq?gid='+GID+
+     '&headers=1&tqx=responseHandler:coachingSheetCallback&t='+Date.now()
+   );
+   return;
+ }
+
+ if(attempt===2){
+   addJsonp(
+     'https://docs.google.com/spreadsheets/d/'+SHEET_ID+
+     '/gviz/tq?sheet=Sheet1&headers=1&tqx=responseHandler:coachingSheetCallback&t='+Date.now()
+   );
+   return;
+ }
+
+ if(attempt===3){
+   addJsonp(
+     'https://docs.google.com/spreadsheets/d/e/'+PUBLISHED_ID+
+     '/gviz/tq?gid='+GID+
+     '&tqx=responseHandler:coachingSheetCallback&t='+Date.now()
+   );
+   return;
+ }
+
+ showError(
+   'Google is blocking public access to the sheet. In Google Sheets, set General access to “Anyone with the link” as Viewer, then refresh this page.'
+ );
+}
+
+function showError(msg){
+ $('status').className='error';
+ $('status').innerHTML='<strong>Calendar could not load.</strong><br>'+esc(msg);
+ $('list').innerHTML='';
+}
+
+function load(){
+ attempt=0;
+ $('status').className='';
+ $('status').textContent='Loading coaching calendar…';
+ tryNextEndpoint();
+}
+
+function summary(){
+ const now=new Date(),today=sod(now),end=new Date(today);end.setDate(end.getDate()+7);
+ const up=events.filter(e=>e.date>=today);
+ $('todayCount').textContent=up.filter(e=>same(e.date,today)).length;
+ $('weekCount').textContent=up.filter(e=>e.date<end).length;
+ const n=events.find(e=>e.date>=now)||up[0];
+ if(n){
+   $('nextName').textContent=n.name;
+   $('nextWhen').textContent=n.date.toLocaleDateString('en-GB',{weekday:'short',day:'numeric',month:'short'})+' • '+ftime(n);
+ }else{$('nextName').textContent='Nothing scheduled';$('nextWhen').textContent='—'}
+}
+
+function selected(){
+ const today=sod(new Date());
+ let x=events.filter(e=>e.date>=today);
+ if(view==='today')x=x.filter(e=>same(e.date,today));
+ if(view==='week'){const end=new Date(today);end.setDate(end.getDate()+7);x=x.filter(e=>e.date<end)}
+ if(view==='month')x=x.filter(e=>e.date.getMonth()===today.getMonth()&&e.date.getFullYear()===today.getFullYear());
+ const q=$('search').value.trim().toLowerCase();
+ if(q)x=x.filter(e=>e.name.toLowerCase().includes(q));
+ return x;
+}
+
+function render(){
+ const x=selected();
+ if(!x.length){$('list').innerHTML='<div class="empty">No coaching bookings found for this view.</div>';return}
+ const groups={};
+ x.forEach(e=>{
+   const k=e.date.getFullYear()+'-'+e.date.getMonth()+'-'+e.date.getDate();
+   (groups[k]??=[]).push(e);
+ });
+ $('list').innerHTML=Object.values(groups).map(day=>{
+   const d=day[0].date;
+   const heading=d.toLocaleDateString('en-GB',{weekday:'long',day:'numeric',month:'long',year:'numeric'});
+   return '<section class="day"><div class="dayhead"><h2>'+esc(heading)+'</h2><span>'+day.length+' '+(day.length===1?'booking':'bookings')+'</span></div>'+
+   day.map(e=>'<div class="booking"><div class="time">'+esc(ftime(e))+'</div><div><div class="name">'+esc(e.name)+'</div><div class="sub">Coaching appointment</div></div><div class="tag">Coaching</div></div>').join('')+
+   '</section>';
+ }).join('');
+}
+
+document.querySelectorAll('.tabs button').forEach(b=>b.onclick=()=>{
+ document.querySelectorAll('.tabs button').forEach(x=>x.classList.remove('active'));
+ b.classList.add('active');view=b.dataset.view;render();
+});
+$('search').oninput=render;
+$('refresh').onclick=load;
+$('todayLabel').textContent=new Date().toLocaleDateString('en-GB',{weekday:'long',day:'numeric',month:'long',year:'numeric'});
+load();
+</script>
+</body>
+</html>
